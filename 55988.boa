@@ -1,0 +1,164 @@
+# First two new algorithms for automatically inferring post-conditions in Boa
+
+p: Project = input;
+counts1: output sum of int;
+counts2: output sum of int;
+
+lhs: set of string;
+
+conds1: set of string;
+conds2: set of string;
+
+# map[int p.id] of map[string api] of set[string caller_function] of string api
+
+A2_result: output collection of string;
+
+
+useslhs := function(e: Expression, lhs: set of string) : bool {
+    found := false;
+    visit(e, visitor {
+        before node: Expression ->
+            if (node.kind == ExpressionKind.VARACCESS && contains(lhs, node.variable))
+                found = true;
+    });
+    return found;
+};
+
+FindStatement := function(s: Statement, k: StatementKind) : bool {
+    result := false;
+    visit(s, visitor {
+        before node: Statement ->
+            if (s.kind == k)
+                result = true;
+    });
+    return result;
+};
+
+FindAPI := function(s: Statement, api: string) : bool {
+    result := false;
+    visit(s, visitor {
+        before node: Statement ->
+            if (FindStatement(s, StatementKind.EXPRESSION)
+                && s.expression.kind == ExpressionKind.ASSIGN
+                && len(s.expression.expressions) > 0
+                && s.expression.expressions[1].kind == ExpressionKind.METHODCALL
+                #&& s.expression.expressions[1].method == `api`
+                ) 
+                result = true;
+    });
+    return result;
+};
+
+a1 := function(p: Project, api: string) : int {
+    
+    visit(p, visitor {
+        before node: CodeRepository -> {
+            snapshot := getsnapshot(node);
+            foreach (i: int; def(snapshot[i]))
+                visit(snapshot[i]);
+            stop;
+		}
+        before node: Method -> {
+            clear(lhs);
+                
+            if (len(node.statements) > 0)
+                for (i := 0; i < len(node.statements[0].statements); i++) {
+                    s := node.statements[0].statements[i];
+                    
+                    # o = m();
+                    if (FindAPI(s, `api`)) { 
+                        add(lhs, s.expression.expressions[0].variable); 
+                        continue;
+                    }
+                    
+                    # check if o is assgned to other values, if so remove o from set    
+                    if (FindStatement(s, StatementKind.EXPRESSION)
+                            && s.expression.kind == ExpressionKind.ASSIGN
+                            && useslhs(s.expression, lhs)
+                            && len(lhs) > 0)
+                        remove(lhs, s.expression.expressions[0].variable);
+                            
+                    # m2(o)    
+                    if (len(lhs) > 0 
+                            && FindStatement(s, StatementKind.EXPRESSION) 
+                            && s.expression.kind == ExpressionKind.METHODCALL
+                            && useslhs(s.expression, lhs)) {
+                        add(conds1, `pre-condition of m2()`);
+                        counts1 << 1;
+                    }
+                }
+                
+        }
+    });
+    return 0;
+};# a1 END
+
+
+
+
+a2 := function(p: Project, api: string) : int {
+
+    visit(p, visitor {
+	    before node: CodeRepository -> {
+		    snapshot := getsnapshot(node);
+		    foreach (i: int; def(snapshot[i]))
+		    	visit(snapshot[i]);
+		    stop;
+		}
+        before node: Method -> {
+            clear(lhs);
+            
+            if (len(node.statements) > 0)
+                for (i := 0; i < len(node.statements[0].statements); i++) {
+                    s := node.statements[0].statements[i];
+                    
+                    # o = m();
+                    if (FindAPI(s, `api`)) { 
+                        add(lhs, s.expression.expressions[0].variable); 
+                        continue;
+                    }
+                        
+                    # if (o) throw
+                    if (len(lhs) > 0 
+                            && FindStatement(s, StatementKind.IF) 
+                            && useslhs(s.expression, lhs)) {
+                        if (FindStatement(s.statements[0], StatementKind.THROW)) {
+                            counts2 << 1;
+                            add(conds2, `if-condition`); 
+                            # add(conds2, string_function(s.expression));
+                        }
+                    } 
+                    
+                    # if (o) {} elseif(){}..else {} 
+                    # IF statement only has 2 statements under itself. TRUE(0)/FALSE(1) blocks
+                    if (len(lhs) > 0 
+                            && FindStatement(s, StatementKind.IF)
+                            && len(s.statements) > 0
+                            ) {
+                        for(j := 0; j < len(s.statements); j++) {
+                            if (FindStatement(s.statements[j], StatementKind.BLOCK) 
+                                && len(s.statements[j].statements) > 0
+                                && useslhs(s.statements[j].expression, lhs)) {
+                                if (FindStatement(s.statements[j].statements[0], StatementKind.THROW)) {
+                                    counts2 << 1;
+                                    add(conds2, `if-condition`); 
+                                    # add(conds2, string_function(s.statements[j].expression));
+                                }
+                            }
+                        }
+                        
+                    }
+                }
+        
+        }
+    });
+    return 0;
+}; # a2 END
+
+
+# a1
+a1(p, `api`);
+
+
+# a2
+a2(p, `api`);
